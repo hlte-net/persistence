@@ -1,0 +1,215 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+const util = require('util');
+const { Client, fetch } = require('undici');
+const pkg = require('./package.json');
+const docopt = require('@eyalsh/docopt').default;
+const Redis = require('ioredis');
+
+const Defaults = Object.freeze({
+  dataPath: './data',
+  redisEnvVarName: 'HLTE_REDIS_URL',
+  cacheKeySuffix: pkg.name + pkg.version
+});
+
+class InternalError extends Error {}
+
+const doc = `
+Hilite media persistence worker.
+
+Usage:
+  ${path.parse(__filename).base} <streamKey> [--data=path] [--redis=url] [--interval=mins] [--keep] [--debug]
+
+Required:
+  streamKey         The stream key to check for work.
+
+Optional:
+  --data=path       Data storage path. [default: ${Defaults.dataPath}]
+  --redis=url       Use 'url' as the Redis connection URL. If not given, env var ${Defaults.redisEnvVarName} is [default: ${process.env[Defaults.redisEnvVarName]}]
+  --interval=mins   Enables daemon mode and sets how long between each wakeup.
+  --keep            Does not remove work items from the queue upon successful completion.
+  --debug           Enable debug logging (can also be enabled by setting env var DEBUG=1).
+`;
+
+const loggerInit = (function () {
+  const LEVELS = ['info', 'log', 'warn', 'error', 'debug'];
+  const enabledLevels = new Set(LEVELS);
+  const [NAME, VERSION] = [pkg.name, pkg.version];
+
+  function enableLevel (l) {
+    enabledLevels.add(l.toLowerCase());
+  }
+
+  function disableLevel (l) {
+    enabledLevels.delete(l.toLowerCase());
+  }
+
+  let logger;
+
+  function initialize (args, overrideConsole = true) {
+    if (!logger) {
+      const APP_NAMEVER = [NAME, VERSION, process.pid].join('/');
+      const dsMapper = (dsArr, colors = false) => dsArr.map(x => typeof x === 'string' ? x : util.inspect(x, { colors, depth: null })).join(' ');
+
+      const _outStream = fs.createWriteStream(`${NAME}.log`);
+      const _console = LEVELS.reduce((a, x) => ({ [x]: console[x], ...a }), {});
+
+      const _emit = (level, ...a) => {
+        if (!enabledLevels.has(level)) {
+          return;
+        }
+
+        const dstrArr = [new Date(), `<${APP_NAMEVER}/${level}>`, ...a];
+        _console[level](dsMapper(dstrArr, true));
+        _outStream.write(dsMapper([{ level }, ...dstrArr, '\n']));
+      };
+
+      logger = LEVELS.reduce((a, lvl) => ({ [lvl]: _emit.bind(logger, lvl), ...a }), { APP_NAMEVER });
+
+      if (overrideConsole) {
+        LEVELS.forEach(level => (console[level] = logger[level]));
+      }
+
+      if (!process.env.DEBUG && !args.debug) {
+        disableLevel('debug');
+      }
+    }
+
+    return logger;
+  }
+
+  initialize.enableLevel = enableLevel;
+  initialize.disableLevel = disableLevel;
+
+  return initialize;
+})();
+
+async function processOneWork (args) {
+  const redisClient = new Redis(args.redis);
+
+  const workList = await redisClient.xread('count', '1', 'streams', args.streamKey, 0);
+
+  if (!workList || !workList.length === 1) {
+    console.log('No work to do!');
+    return;
+  }
+
+  if (workList[0][0] !== args.streamKey || workList[0][1].length !== 1 || workList[0][1][0].length !== 2) {
+    console.error('Malformed work unit', workList);
+    return;
+  }
+
+  const [entryId, kvList] = workList[0][1][0];
+  const entryMap = kvList.reduce((b, ele, i) => {
+    if (!(i % 2)) {
+      b[ele] = kvList[i + 1];
+    }
+
+    return b;
+  }, {});
+
+  const { checksum, timestamp } = entryMap;
+  const longestKey = Object.keys(entryMap).reduce((a, i) => Math.max(a, i.length), -2e32);
+  console.log(`Processing entry ID ${entryId} with the following fields:`);
+  Object.entries(entryMap).forEach(([k, v]) => console.log(`\t${k.padEnd(longestKey + 1)}->  ${v}`));
+
+  const writeSteamForIdType = (idType, headers, assocType) => {
+    const idPath = path.resolve(args.data, idType);
+    fs.mkdirSync(idPath, { recursive: true });
+    const fExtn = assocType ? 'json' : headers['content-type'].split(';')[0].split('/')[1];
+    const resPath = path.resolve(idPath, `${checksum}-${timestamp}${assocType ? `.${assocType}` : ''}.${fExtn}`);
+    return fs.createWriteStream(resPath);
+  };
+
+  await Promise.all([entryMap.primaryURI, entryMap.secondaryURI]
+    .map(async (u, i) => {
+      if (u.length) {
+        const url = new URL(u);
+        const headRes = await fetch(u, { method: 'HEAD' });
+
+        if (!headRes.ok) {
+          console.warn(`HEAD to ${u} failed with ${headRes.status}; skipping!`);
+          console.debug(entryMap, headRes.headers);
+          return null;
+        }
+
+        return (new Client(url.origin)).stream({
+          path: url.pathname + url.search,
+          method: 'GET'
+        }, ({ statusCode, headers }) => {
+          if (statusCode !== 200) {
+            console.error(`Request to ${u} failed with ${statusCode}; skipping`)
+            console.debug(entryMap, url, statusCode, headers);
+            return null;
+          }
+
+          const idType = i === 0 ? 'primary' : 'secondary';
+          console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`)
+
+          const metaWs = writeSteamForIdType('metadata', null, idType);
+          metaWs.write(JSON.stringify({
+            entryMap,
+            headers,
+            processed: new Date()
+          }, null, 2));
+          console.log('Wrote metadata into:');
+          console.log('\t' + metaWs.path.replace(args.data, ''));
+          metaWs.close();
+
+          const ws = writeSteamForIdType(idType, headers);
+          console.log('Piped resource contents into:');
+          console.log('\t' + ws.path.replace(args.data, ''));
+          return ws;
+        });
+      }
+
+      return null;
+    }));
+
+  if (!args.keep) {
+    console.log(`Removed ${args.streamKey} entry ${entryId}?`, await redisClient.xdel(args.streamKey, entryId));
+  }
+
+  redisClient.disconnect();
+}
+
+try {
+  const args = Object.entries(docopt(doc)).reduce((a, [k, v]) => ({ [k.replace(/[<>-]+/g, '')]: v, ...a }), {});
+  args.data = path.resolve(args.data);
+
+  loggerInit(args);
+  console.debug(args);
+
+  try {
+    fs.mkdirSync(path.resolve(args.data));
+  } catch (err) {
+    if (err.code !== 'EEXIST') {
+      throw err;
+    }
+  }
+
+  const mainBound = processOneWork.bind(null, args);
+  let mainExec = mainBound;
+
+  if (args.interval) {
+    const go = () => {
+      mainBound();
+      console.log();
+      setTimeout(go, args.interval * 60 * 1000);
+    };
+
+    mainExec = go;
+    process.on('SIGINT', () => process.exit(0));
+    console.info(`Daemonizing, will wake up every ${args.interval} minute(s)...`);
+  }
+
+  mainExec();
+} catch (err) {
+  if (err instanceof InternalError) {
+    console.error(err);
+  } else {
+    console.log(err.message);
+  }
+}

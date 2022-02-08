@@ -1,0 +1,20 @@
+{
+  "name": "persistence",
+  "version": "0.0.1",
+  "description": "",
+  "main": "persistence",
+  "scripts": {
+    "lint": "semistandard --fix --verbose ./persistence"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@eyalsh/docopt": "^1.0.7",
+    "ioredis": "^4.28.5",
+    "sqlite3": "^5.0.2",
+    "undici": "^4.13.0"
+  },
+  "devDependencies": {
+    "semistandard": "^16.0.1"
+  }
+}
