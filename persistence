@@ -87,18 +87,22 @@ const loggerInit = (function () {
 })();
 
 async function processOneWork (args) {
-  const redisClient = new Redis(args.redis);
+  const redisExecOne = async (cmdFuncName, ...a) => {
+    const redisClient = new Redis(args.redis);
+    const retVal = await redisClient[cmdFuncName](...a);
+    redisClient.disconnect();
+    return retVal;
+  };
 
-  const workList = await redisClient.xread('count', '1', 'streams', args.streamKey, 0);
+  const workList = await redisExecOne('xread', 'count', '1', 'streams', args.streamKey, 0);
 
   if (!workList || !workList.length === 1) {
-    console.log('No work to do!');
-    return;
+    return null;
   }
 
   if (workList[0][0] !== args.streamKey || workList[0][1].length !== 1 || workList[0][1][0].length !== 2) {
     console.error('Malformed work unit', workList);
-    return;
+    return null;
   }
 
   const [entryId, kvList] = workList[0][1][0];
@@ -115,7 +119,7 @@ async function processOneWork (args) {
   console.log(`Processing entry ID ${entryId} with the following fields:`);
   Object.entries(entryMap).forEach(([k, v]) => console.log(`\t${k.padEnd(longestKey + 1)}->  ${v}`));
 
-  const writeSteamForIdType = (idType, headers, assocType) => {
+  const writeStreamForIdType = (idType, headers, assocType) => {
     const idPath = path.resolve(args.data, idType);
     fs.mkdirSync(idPath, { recursive: true });
     const fExtn = assocType ? 'json' : headers['content-type'].split(';')[0].split('/')[1];
@@ -140,15 +144,15 @@ async function processOneWork (args) {
           method: 'GET'
         }, ({ statusCode, headers }) => {
           if (statusCode !== 200) {
-            console.error(`Request to ${u} failed with ${statusCode}; skipping`)
+            console.error(`Request to ${u} failed with ${statusCode}; skipping`);
             console.debug(entryMap, url, statusCode, headers);
             return null;
           }
 
           const idType = i === 0 ? 'primary' : 'secondary';
-          console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`)
+          console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`);
 
-          const metaWs = writeSteamForIdType('metadata', null, idType);
+          const metaWs = writeStreamForIdType('metadata', null, idType);
           metaWs.write(JSON.stringify({
             entryMap,
             headers,
@@ -158,7 +162,7 @@ async function processOneWork (args) {
           console.log('\t' + metaWs.path.replace(args.data, ''));
           metaWs.close();
 
-          const ws = writeSteamForIdType(idType, headers);
+          const ws = writeStreamForIdType(idType, headers);
           console.log('Piped resource contents into:');
           console.log('\t' + ws.path.replace(args.data, ''));
           return ws;
@@ -169,10 +173,12 @@ async function processOneWork (args) {
     }));
 
   if (!args.keep) {
-    console.log(`Removed ${args.streamKey} entry ${entryId}?`, await redisClient.xdel(args.streamKey, entryId));
+    const rmRet = await redisExecOne('xdel', args.streamKey, entryId);
+    console.log(`Removed ${args.streamKey} entry ${entryId}?`, rmRet);
   }
 
-  redisClient.disconnect();
+  console.log();
+  return entryId;
 }
 
 try {
@@ -195,9 +201,7 @@ try {
 
   if (args.interval) {
     const go = () => {
-      mainBound();
-      console.log();
-      setTimeout(go, args.interval * 60 * 1000);
+      mainBound().then((processedSomeWork) => setTimeout(go, processedSomeWork ? 0 : args.interval * 60 * 1000));
     };
 
     mainExec = go;
