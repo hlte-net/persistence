@@ -127,50 +127,60 @@ async function processOneWork (args) {
     return fs.createWriteStream(resPath);
   };
 
-  await Promise.all([entryMap.primaryURI, entryMap.secondaryURI]
-    .map(async (u, i) => {
-      if (u.length) {
-        const url = new URL(u);
-        const headRes = await fetch(u, { method: 'HEAD' });
+  const processSingleURI = async (u, i) => {
+    if (u.length) {
+      const url = new URL(u);
+      const headRes = await fetch(u, { method: 'HEAD' });
 
-        if (!headRes.ok) {
-          console.warn(`HEAD to ${u} failed with ${headRes.status}; skipping!`);
-          console.debug(entryMap, headRes.headers);
+      if (!headRes.ok) {
+        console.warn(`HEAD to ${u} failed with ${headRes.status}; skipping!`);
+        console.debug(entryMap, headRes.headers);
+        return null;
+      }
+
+      return (new Client(url.origin)).stream({
+        path: url.pathname + url.search,
+        method: 'GET'
+      }, ({ statusCode, headers }) => {
+        if (statusCode !== 200) {
+          console.error(`Request to ${u} failed with ${statusCode}; skipping`);
+          console.debug(entryMap, url, statusCode, headers);
           return null;
         }
 
-        return (new Client(url.origin)).stream({
-          path: url.pathname + url.search,
-          method: 'GET'
-        }, ({ statusCode, headers }) => {
-          if (statusCode !== 200) {
-            console.error(`Request to ${u} failed with ${statusCode}; skipping`);
-            console.debug(entryMap, url, statusCode, headers);
-            return null;
-          }
+        const idType = i === 0 ? 'primary' : 'secondary';
+        console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`);
 
-          const idType = i === 0 ? 'primary' : 'secondary';
-          console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`);
+        const metaWs = writeStreamForIdType('metadata', null, idType);
+        metaWs.write(JSON.stringify({
+          entryMap,
+          headers,
+          processed: new Date()
+        }, null, 2));
+        console.log('Wrote metadata into:');
+        console.log('\t' + metaWs.path.replace(args.data, ''));
+        metaWs.close();
 
-          const metaWs = writeStreamForIdType('metadata', null, idType);
-          metaWs.write(JSON.stringify({
-            entryMap,
-            headers,
-            processed: new Date()
-          }, null, 2));
-          console.log('Wrote metadata into:');
-          console.log('\t' + metaWs.path.replace(args.data, ''));
-          metaWs.close();
+        const ws = writeStreamForIdType(idType, headers);
+        console.log('Piped resource contents into:');
+        console.log('\t' + ws.path.replace(args.data, ''));
+        return ws;
+      });
+    }
 
-          const ws = writeStreamForIdType(idType, headers);
-          console.log('Piped resource contents into:');
-          console.log('\t' + ws.path.replace(args.data, ''));
-          return ws;
-        });
-      }
+    return null;
+  };
 
-      return null;
-    }));
+  try {
+    await Promise.all([entryMap.primaryURI, entryMap.secondaryURI].map(processSingleURI));
+  } catch (err) {
+    console.error(`Processing of ${entryId} failed! Full error:`);
+    console.error(err);
+
+    const deadKey = [args.streamKey, 'failed'].join(':');
+    const deadEntryId = await redisExecOne('xadd', deadKey, entryId, 'checksum', checksum, 'timestamp', timestamp);
+    console.error(`Recorded failure as ID ${deadEntryId} in ${deadKey}`);
+  }
 
   if (!args.keep) {
     const rmRet = await redisExecOne('xdel', args.streamKey, entryId);
