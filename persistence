@@ -149,7 +149,7 @@ async function processOneWork (args) {
         }
 
         const idType = i === 0 ? 'primary' : 'secondary';
-        console.log(`Processing ${idType}; content-type is "${headers['content-type']}"...`);
+        console.log(`Processing ${idType}: content-type is "${headers['content-type']}"...`);
 
         const metaWs = writeStreamForIdType('metadata', null, idType);
         metaWs.write(JSON.stringify({
