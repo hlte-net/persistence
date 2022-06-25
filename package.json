@@ -12,7 +12,7 @@
     "@eyalsh/docopt": "^1.0.7",
     "ioredis": "^4.28.5",
     "sqlite3": "^5.0.2",
-    "undici": "^4.13.0"
+    "undici": "^5.5.1"
   },
   "devDependencies": {
     "semistandard": "^16.0.1"
