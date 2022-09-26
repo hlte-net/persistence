@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+  <title>A Window Into</title>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style type="text/css">
+      body {
+        color: rgb(142, 172, 254);
+        background-color: rgb(55, 51, 47);
+        font-family: Garamond, serif;
+        font-weight: lighter;
+        text-align: center;
+        vertical-align: center;
+        margin-top: 3vh;
+      }
+
+      a, a:visited {
+        color: rgb(254, 207, 142);
+        text-decoration: none;
+      }
+
+      #main {
+        text-align: center;
+        margin: 2vh 2vw 2vh 2vw;
+        text-decoration: none;
+      }
+
+      img {
+        border-radius: 2em;
+        max-width: 1280px;
+        max-height: 1024px;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>
+      A Window Into
+    </h3>
+
+    <div id="main">
+      <a href="{{{ linkUrl }}}" target="_blank"><img src="{{{ imageUrl }}}" /></a>
+    </div>
+
+    <h5>
+      This is the last image I saved with <a href="https://hlte.net" target="_blank">hlte.net</a> &amp;
+      I did so at {{ saveTime }} UTC.
+    </h5>
+    
+    <script data-goatcounter="https://window-into.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
+  </body>
+</html>

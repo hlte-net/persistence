@@ -3,15 +3,24 @@
 const fs = require('fs');
 const path = require('path');
 const util = require('util');
-const { Client, fetch } = require('undici');
+const { Client } = require('undici');
 const pkg = require('./package.json');
 const docopt = require('@eyalsh/docopt').default;
 const Redis = require('ioredis');
+const mustache = require('mustache');
+const probeImageSize = require('probe-image-size');
+const sqlite = require('sqlite3');
 
 const Defaults = Object.freeze({
   dataPath: './data',
+  mainDbPath: process.env.HLTE_DB_PATH,
   redisEnvVarName: 'HLTE_REDIS_URL',
-  cacheKeySuffix: pkg.name + pkg.version
+  cacheKeySuffix: pkg.name + pkg.version,
+  gallery: {
+    templateFile: './gallery.html',
+    livePath: process.env.HLTE_GALLERY_LIVE_PATH,
+    requiredPixels: 300000
+  }
 });
 
 class InternalError extends Error {}
@@ -32,6 +41,51 @@ Optional:
   --keep            Does not remove work items from the queue upon successful completion.
   --debug           Enable debug logging (can also be enabled by setting env var DEBUG=1).
 `;
+
+async function processPrimaryImage (imageUrl, imagePath, metadata) {
+  if (!Defaults.gallery) {
+    return;
+  }
+
+  console.log(`Processing primary image for gallery ${imageUrl} ${imagePath}`, metadata);
+  const imageData = await probeImageSize(imageUrl);
+  console.log('Image dimensions', imageData);
+
+  if (!imageData || (imageData.width * imageData.height < Defaults.gallery.requiredPixels)) {
+    return;
+  }
+
+  const db = new sqlite.Database(Defaults.mainDbPath, sqlite.OPEN_READONLY);
+  const [{ annotation }] = await new Promise((resolve, reject) => {
+    db.all('SELECT annotation FROM hlte WHERE checksum = ? AND timestamp = ?',
+      [metadata.entryMap.checksum, metadata.entryMap.timestamp],
+      (err, rows) => {
+        db.close();
+
+        if (err) {
+          return reject(err);
+        }
+
+        if (rows.length > 1) {
+          return reject(new Error(`More than one row fetched for checksum=${metadata.entryMap.checksum} AND timestamp=${metadata.entryMap.timestamp}`));
+        }
+
+        resolve(rows);
+      });
+  });
+
+  if (annotation.indexOf('#publish') === -1) {
+    console.log(`Skipping image because '#publish' not included in annotation: "${annotation}"`);
+    return;
+  }
+
+  const tmpl = (await fs.promises.readFile(Defaults.gallery.templateFile)).toString('utf8');
+  return fs.promises.writeFile(Defaults.gallery.livePath, mustache.render(tmpl, {
+    imageUrl,
+    saveTime: new Date(metadata.entryMap.timestamp / 1e6).toLocaleString(),
+    linkUrl: metadata.entryMap.secondaryURI
+  }));
+}
 
 const loggerInit = (function () {
   const LEVELS = ['info', 'log', 'warn', 'error', 'debug'];
@@ -113,6 +167,7 @@ async function processOneWork (args) {
 
     return b;
   }, {});
+  console.debug('workList', workList, '-> entryMap', entryMap);
 
   const { checksum, timestamp } = entryMap;
   const longestKey = Object.keys(entryMap).reduce((a, i) => Math.max(a, i.length), -2e32);
@@ -128,35 +183,30 @@ async function processOneWork (args) {
   };
 
   const processSingleURI = async (u, i) => {
+    const idType = i === 0 ? 'primary' : 'secondary';
     if (u.length) {
       const url = new URL(u);
-      const headRes = await fetch(u, { method: 'HEAD' });
-
-      if (!headRes.ok) {
-        console.warn(`HEAD to ${u} failed with ${headRes.status}; skipping!`);
-        console.debug(entryMap, headRes.headers);
-        return null;
-      }
-
+      console.debug(`GETing ${url.origin}/${url.pathname + url.search} (${idType})...`);
       return (new Client(url.origin)).stream({
         path: url.pathname + url.search,
         method: 'GET'
       }, ({ statusCode, headers }) => {
+        console.debug(`GET ${url.origin}/${url.pathname + url.search}: ${statusCode}`, headers);
         if (statusCode !== 200) {
           console.error(`Request to ${u} failed with ${statusCode}; skipping`);
           console.debug(entryMap, url, statusCode, headers);
           return null;
         }
 
-        const idType = i === 0 ? 'primary' : 'secondary';
         console.log(`Processing ${idType}: content-type is "${headers['content-type']}"...`);
 
-        const metaWs = writeStreamForIdType('metadata', null, idType);
-        metaWs.write(JSON.stringify({
+        const metadata = {
           entryMap,
           headers,
           processed: new Date()
-        }, null, 2));
+        };
+        const metaWs = writeStreamForIdType('metadata', null, idType);
+        metaWs.write(JSON.stringify(metadata, null, 2));
         console.log('Wrote metadata into:');
         console.log('\t' + metaWs.path.replace(args.data, ''));
         metaWs.close();
@@ -164,6 +214,12 @@ async function processOneWork (args) {
         const ws = writeStreamForIdType(idType, headers);
         console.log('Piped resource contents into:');
         console.log('\t' + ws.path.replace(args.data, ''));
+
+        if (idType === 'primary' && headers['content-type'].startsWith('image/')) {
+          processPrimaryImage(u, ws.path, metadata)
+            .catch((e) => console.error('processPrimaryImage failed', e, u, ws.path, metadata));
+        }
+
         return ws;
       });
     }
@@ -172,7 +228,7 @@ async function processOneWork (args) {
   };
 
   try {
-    await Promise.all([entryMap.primaryURI, entryMap.secondaryURI].map(processSingleURI));
+    (await Promise.all([entryMap.primaryURI, entryMap.secondaryURI].map(processSingleURI)));
   } catch (err) {
     console.error(`Processing of ${entryId} failed! Full error:`);
     console.error(err);
