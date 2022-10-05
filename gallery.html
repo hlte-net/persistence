@@ -1,17 +1,22 @@
 <!DOCTYPE html>
 <html>
-  <title>A Window Into</title>
+  <title>🪟 A Window Into</title>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style type="text/css">
+      @import url("https://fonts.googleapis.com/css?family=Montserrat:400,500,700");
+
       body {
-        color: rgb(142, 172, 254);
-        background-color: rgb(55, 51, 47);
-        font-family: Garamond, serif;
+        color: rgb(255, 141, 27);
+        background-color: rgb(85, 69, 53);
+        font-family: "Montserrat", sans-serif;
         font-weight: lighter;
         text-align: center;
         vertical-align: center;
         margin-top: 3vh;
+        line-height: 1.5em;
+        font-size: 1.2em;
+        text-rendering: optimizeLegibility;
       }
 
       a, a:visited {
@@ -30,22 +35,65 @@
         max-width: 1280px;
         max-height: 1024px;
       }
+
+      .container {
+        display: inline-flex;
+        align-items: stretch;
+        align-content: stretch;
+      }
+
+      .vertcont {
+        flex-direction: column;
+      }
+
+      .spacer {
+        flex-grow: 1;
+      }
+
+      .main {
+        flex-grow: 3;
+      }
+      
+      .content_font {
+        font-size: 0.8em;
+        font-weight: lighter;
+      }
+
+      #tl_container {
+        width: 100%;
+      }
+
+      .centered {
+        text-align: center;
+        vertical-align: middle;
+      }
+
+      h3 {
+        text-shadow: 0px 0px 25px rgb(254, 207, 142);
+      }
     </style>
   </head>
   <body>
-    <h3>
-      A Window Into
-    </h3>
-
-    <div id="main">
-      <a href="{{{ linkUrl }}}" target="_blank"><img src="{{{ imageUrl }}}" /></a>
+    
+    <div class="container" id="tl_container">
+      <div class="container spacer"></div>
+      <div class="container vertcont main centered">
+        <h3>
+          A Window Into
+        </h3>
+    
+        <div id="main">
+          <a href="{{{ linkUrl }}}" target="_blank"><img src="{{{ imageUrl }}}" /></a>
+        </div>
+    
+        <h5>
+          This is the last image I saved with <a href="https://hlte.net" target="_blank">hlte.net</a> &amp;
+          I did so at {{ saveTime }} UTC.
+        </h5>
+      </div>
+      <div class="container spacer"></div>
     </div>
 
-    <h5>
-      This is the last image I saved with <a href="https://hlte.net" target="_blank">hlte.net</a> &amp;
-      I did so at {{ saveTime }} UTC.
-    </h5>
-    
     <script data-goatcounter="https://window-into.goatcounter.com/count"
         async src="//gc.zgo.at/count.js"></script>
   </body>
