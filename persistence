@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const util = require('util');
-const { Client } = require('undici');
+const { Client, request } = require('undici');
 const pkg = require('./package.json');
 const docopt = require('@eyalsh/docopt').default;
 const Redis = require('ioredis');
@@ -23,7 +23,7 @@ const Defaults = Object.freeze({
   }
 });
 
-class InternalError extends Error {}
+class InternalError extends Error { }
 
 const doc = `
 Hilite media persistence worker.
@@ -42,7 +42,7 @@ Optional:
   --debug           Enable debug logging (can also be enabled by setting env var DEBUG=1).
 `;
 
-async function processPrimaryImage (imageUrl, imagePath, metadata) {
+async function processPrimaryImage(imageUrl, imagePath, metadata) {
   if (!Defaults.gallery) {
     return;
   }
@@ -94,17 +94,17 @@ const loggerInit = (function () {
   const enabledLevels = new Set(LEVELS);
   const [NAME, VERSION] = [pkg.name, pkg.version];
 
-  function enableLevel (l) {
+  function enableLevel(l) {
     enabledLevels.add(l.toLowerCase());
   }
 
-  function disableLevel (l) {
+  function disableLevel(l) {
     enabledLevels.delete(l.toLowerCase());
   }
 
   let logger;
 
-  function initialize (args, overrideConsole = true) {
+  function initialize(args, overrideConsole = true) {
     if (!logger) {
       const APP_NAMEVER = [NAME, VERSION, process.pid].join('/');
       const dsMapper = (dsArr, colors = false) => dsArr.map(x => typeof x === 'string' ? x : util.inspect(x, { colors, depth: null })).join(' ');
@@ -142,7 +142,7 @@ const loggerInit = (function () {
   return initialize;
 })();
 
-async function processOneWork (args) {
+async function processOneWork(args) {
   const redisExecOne = async (cmdFuncName, ...a) => {
     const redisClient = new Redis(args.redis);
     const retVal = await redisClient[cmdFuncName](...a);
@@ -187,6 +187,22 @@ async function processOneWork (args) {
   const processSingleURI = async (u, i) => {
     const idType = i === 0 ? 'primary' : 'secondary';
     if (u.length) {
+      // fire off a PP worker persistor right away
+      if (idType === 'primary') {
+        const workerReq = `${process.env['X_HLTE_PERSIST_URL']}/?hlteUuid=${checksum}-${timestamp}&url=${u}`;
+        console.log('Worker request:', workerReq);
+        request(workerReq, {
+          headers: {
+            'x-hlte-token': process.env['X_HLTE_TOKEN']
+          }
+        })
+          .then((resp) => {
+            console.log(`Persist worker result`, resp.statusCode);
+            resp.body.json().then(console.log).catch(console.error);
+          })
+          .catch(console.error);
+      }
+
       const url = new URL(u);
       console.debug(`GETing ${url.origin}/${url.pathname + url.search} (${idType})...`);
       return (new Client(url.origin)).stream({
