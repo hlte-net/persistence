@@ -23,6 +23,12 @@ const Defaults = Object.freeze({
   }
 });
 
+const WorkerPdfOptsJsonB64 = btoa(JSON.stringify({
+  displayHeaderFooter: true,
+  footerTemplate: "<i class='title'></i> &lt;<span class='url'></span>&gt; at <span class='date'></span>, " +
+    "page <span class='pageNumber'></span> of <span class='totalPages'></span>"
+}));
+
 class InternalError extends Error { }
 
 const doc = `
@@ -189,11 +195,16 @@ async function processOneWork(args) {
     if (u.length) {
       // fire off a PP worker persistor right away
       if (idType === 'primary') {
-        const workerReq = `${process.env['X_HLTE_PERSIST_URL']}/?hlteUuid=${checksum}-${timestamp}&url=${u}`;
+        const params = new URLSearchParams([
+          ['hlteUuid', `${checksum}-${timestamp}`],
+          ['pdfOpts', WorkerPdfOptsJsonB64],
+          ['url', u],
+        ])
+        const workerReq = `${process.env.X_HLTE_PERSIST_URL}/?${params.toString()}`;
         console.log('Worker request:', workerReq);
         request(workerReq, {
           headers: {
-            'x-hlte-token': process.env['X_HLTE_TOKEN']
+            'x-hlte-token': process.env.X_HLTE_TOKEN
           }
         })
           .then((resp) => {
