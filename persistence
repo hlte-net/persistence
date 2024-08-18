@@ -57,7 +57,8 @@ async function processPrimaryImage (imageUrl, imagePath, metadata) {
 
   const db = new sqlite.Database(Defaults.mainDbPath, sqlite.OPEN_READONLY);
   const [{ annotation }] = await new Promise((resolve, reject) => {
-    db.all('SELECT annotation FROM hlte WHERE checksum = ? AND timestamp = ?',
+    console.log('looking for ', metadata.entryMap);
+    db.all('SELECT * FROM hlte WHERE checksum = ? AND timestamp = ?',
       [metadata.entryMap.checksum, metadata.entryMap.timestamp],
       (err, rows) => {
         db.close();
@@ -70,6 +71,7 @@ async function processPrimaryImage (imageUrl, imagePath, metadata) {
           return reject(new Error(`More than one row fetched for checksum=${metadata.entryMap.checksum} AND timestamp=${metadata.entryMap.timestamp}`));
         }
 
+        console.log('ROWS', rows);
         resolve(rows);
       });
   });
